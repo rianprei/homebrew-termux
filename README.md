@@ -25,7 +25,7 @@ Native Homebrew port for Termux Android (ARM64). No proot, no chroot, no contain
 - **Bubblewrap sandbox**: Disabled on Termux (no unprivileged user namespaces)
 - **Prefix mismatch**: Bottles built for `/home/linuxbrew/.linuxbrew` work via `--force-bottle`
 - **ELF patching**: All binaries must be patched with patchelf to use glibc linker
-- **`brew update-reset`**: destructive by design (hard-resets `Library/Homebrew` to upstream for every user) — always wipes these patches, always reapply `patches/build-from-source-fixes.patch` after running it
+- **`brew update-reset`**: destructive by design (hard-resets `Library/Homebrew` to upstream for every user) — a `post-checkout` git hook (`$HOMEBREW_REPOSITORY/.git/hooks/post-checkout`, not tracked by git so it survives the reset) auto-reapplies and recommits the patch after it
 
 ## `--build-from-source` (verified working)
 
@@ -67,7 +67,7 @@ Termux (Android ARM64)
 
 4. **Path redirection**: All references to `/bin/bash`, `/usr/bin/env`, `/usr/bin/ldd` are redirected to Termux equivalents.
 
-5. **Patch persistence**: `cmd/update.sh` guard skips self-updating `Library/Homebrew` while local Termux commits are present, so `brew update` doesn't wipe them. `brew update-reset` is NOT guarded (destructive by design) — reapply `patches/build-from-source-fixes.patch` after running it.
+5. **Patch persistence**: `cmd/update.sh` tries `git rebase` onto the new upstream first (keeps both upstream changes and local Termux commits); only skips the self-update, with a warning, if that rebase conflicts — it doesn't freeze `Library/Homebrew` forever. `brew update-reset` bypasses this (destructive by design, hard-resets to upstream), but a `post-checkout` git hook auto-reapplies and recommits the patch afterward, so no manual step is needed.
 
 ## Installation
 
@@ -111,12 +111,9 @@ bash ~/homebrew-termux/test.sh
 
 ## How Patches Work
 
-All patches are applied by `apply-patches.sh` which is:
-- **Idempotent**: Safe to run multiple times
-- **Detectable**: Each patch checks for a sentinel pattern before applying
-- **Reversible**: `rollback.sh` reverts all changes via `git checkout`
+`patches/build-from-source-fixes.patch` is applied with plain `git apply` against `$HOMEBREW_REPOSITORY`, then committed locally (`git commit`) — this is what `cmd/update.sh`'s guard checks for to know it should try rebasing instead of resetting.
 
-Git hooks (`post-merge`, `post-checkout`, `post-rewrite`) automatically re-apply patches after `brew update`.
+For the one path that guard doesn't cover (`brew update-reset`, which force-checks-out origin/HEAD), `$HOMEBREW_REPOSITORY/.git/hooks/post-checkout` re-applies and recommits the patch automatically. It's a no-op (exit 0, does nothing) if the patch is already applied.
 
 ## ELF Binary Validation
 
