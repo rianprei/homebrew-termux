@@ -14,10 +14,10 @@ index 0272db9188..b5cc1bcc5f 100644
            puts JSON.pretty_generate({ tier:, findings: finding_maps }).gsub(/\[\n\n\s*\]/, "[]")
  
 diff --git a/Library/Homebrew/cmd/update.sh b/Library/Homebrew/cmd/update.sh
-index 32a44651ee..2a094d6281 100644
+index 32a44651ee..db3db4e321 100644
 --- a/Library/Homebrew/cmd/update.sh
 +++ b/Library/Homebrew/cmd/update.sh
-@@ -250,6 +250,43 @@ merge_or_rebase() {
+@@ -250,6 +250,48 @@ merge_or_rebase() {
    local UPSTREAM_BRANCH
  
    DIR="$1"
@@ -29,7 +29,7 @@ index 32a44651ee..2a094d6281 100644
 +    termux_upstream_ref="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)"
 +    if [[ -z "${termux_upstream_ref}" ]] || ! git rev-parse --verify -q "${termux_upstream_ref}" &>/dev/null
 +    then
-+      termux_upstream_ref="origin/main"
++      termux_upstream_ref="origin/${3:-main}"
 +      git rev-parse --verify -q "${termux_upstream_ref}" &>/dev/null || termux_upstream_ref=""
 +    fi
 +    if [[ -n "${termux_upstream_ref}" ]] &&
@@ -48,6 +48,11 @@ index 32a44651ee..2a094d6281 100644
 +      then
 +        export HOMEBREW_UPDATE_BEFORE"$2"="${termux_pre_rebase_revision}"
 +        export HOMEBREW_UPDATE_AFTER"$2"="$(read_current_revision)"
++        # Termux: this function normally sets HOMEBREW_UPDATED itself at the
++        # end when INITIAL_REVISION != CURRENT_REVISION; our early return
++        # bypasses that, so update-report (which gates on HOMEBREW_UPDATED)
++        # would never fire even though the rebase moved HEAD forward.
++        [[ "${termux_pre_rebase_revision}" != "$(read_current_revision)" ]] && HOMEBREW_UPDATED="1"
 +      else
 +        git rebase --abort &>/dev/null
 +        opoo "Skipping self-update of ${DIR}: local Termux compat commits don't rebase cleanly onto ${termux_upstream_ref}."
@@ -62,7 +67,7 @@ index 32a44651ee..2a094d6281 100644
    TAP_VAR="$2"
    UPSTREAM_BRANCH="$3"
 diff --git a/Library/Homebrew/cmd/vendor-install.sh b/Library/Homebrew/cmd/vendor-install.sh
-index a4fc1c137c..98f57f6974 100644
+index a4fc1c137c..9d38e25c81 100644
 --- a/Library/Homebrew/cmd/vendor-install.sh
 +++ b/Library/Homebrew/cmd/vendor-install.sh
 @@ -79,7 +79,9 @@ check_linux_glibc_version() {
@@ -76,7 +81,7 @@ index a4fc1c137c..98f57f6974 100644
    then
      glibc_version="${BASH_REMATCH[0]// /}"
      glibc_version_major="${glibc_version%.*}"
-@@ -261,6 +263,48 @@ install() {
+@@ -261,6 +263,64 @@ install() {
    [[ -n "${HOMEBREW_QUIET}" ]] || ohai "Pouring ${VENDOR_FILENAME}" >&2
    tar "${tar_args}" "${CACHED_LOCATION}"
  
@@ -85,9 +90,11 @@ index a4fc1c137c..98f57f6974 100644
 +    local termux_patchelf="/data/data/com.termux/files/usr/glibc/bin/patchelf"
 +    local termux_glibc_ld
 +    case "$(uname -m)" in
-+      aarch64) termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1" ;;
-+      x86_64)  termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-x86-64.so.2" ;;
-+      *)       termux_glibc_ld="" ;;
++      aarch64)           termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1" ;;
++      x86_64)            termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-x86-64.so.2" ;;
++      armv7l|armv8l|arm) termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-armhf.so.3" ;;
++      i686|i386)         termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux.so.2" ;;
++      *)                 termux_glibc_ld="" ;;
 +    esac
 +    local termux_glibc_lib="/data/data/com.termux/files/usr/glibc/lib"
 +    if [[ -x "${termux_patchelf}" && -n "${termux_glibc_ld}" ]]
@@ -95,7 +102,10 @@ index a4fc1c137c..98f57f6974 100644
 +      find "${VENDOR_DIR}/portable-${VENDOR_NAME}/${VENDOR_VERSION}" -type f -print0 2>/dev/null | while IFS= read -r -d '' vf
 +      do
 +        [[ -L "${vf}" ]] && continue
-+        head -c4 "${vf}" 2>/dev/null | grep -q $'\x7fELF' || continue
++        # -a forces binary-safe text handling; some grep builds (e.g. toybox,
++        # which this may run under before Homebrew's own PATH is set up)
++        # otherwise treat the ELF magic bytes as "binary file" and skip it.
++        head -c4 "${vf}" 2>/dev/null | grep -qa $'\x7fELF' || continue
 +        if ! chmod u+w "${vf}" 2>/dev/null
 +        then
 +          echo "Termux: failed to make ${vf} writable, skipping patchelf" >&2
@@ -104,7 +114,18 @@ index a4fc1c137c..98f57f6974 100644
 +        local old_rpath
 +        old_rpath="$("${termux_patchelf}" --print-rpath "${vf}" 2>/dev/null)"
 +        local new_rpath="${termux_glibc_lib}"
-+        [[ -n "${old_rpath}" ]] && new_rpath="${old_rpath}:${termux_glibc_lib}"
++        if [[ -n "${old_rpath}" ]]
++        then
++          # Termux: re-running vendor-install (retry, reinstall) re-reads the
++          # already-patched rpath and appended termux_glibc_lib again every
++          # time, growing it unboundedly across runs. Only append if missing.
++          if [[ ":${old_rpath}:" == *":${termux_glibc_lib}:"* ]]
++          then
++            new_rpath="${old_rpath}"
++          else
++            new_rpath="${old_rpath}:${termux_glibc_lib}"
++          fi
++        fi
 +        # Shared libs (.so) have no PT_INTERP segment to rewrite; only real
 +        # executables do. Only pass --set-interpreter when one already
 +        # exists, so this doesn't error out on every .so in the vendor tree.

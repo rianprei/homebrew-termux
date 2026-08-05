@@ -39,6 +39,10 @@ Native Homebrew port for Termux Android (ARM64). No proot, no chroot, no contain
 - `os/linux/glibc.rb`: **root cause** of a nasty cascade — `Glibc.system_version` shelled out to a hardcoded `/usr/bin/ldd` that doesn't exist, silently returned a null version, which made Homebrew think glibc was "too old" and auto-add `glibc`+`linux-headers` as a forced from-source dependency for *any* formula, and also broke `DevelopmentTools.locate` into reporting "No developer tools installed" even with a working from-source GCC installed
 - `cmd/doctor.rb`: fixed a `max_by` crash comparing `Symbol` vs `Integer` tiers (hit by any non-default/Tier-3 prefix, which this always is)
 - `LC_ALL=C.UTF-8` forced in `os.sh` instead of falling back to `C` (Termux has no `locale` binary), since `LC_ALL=C` makes Ruby's external encoding US-ASCII and `JSON.parse` crashes on the first non-ASCII byte in a formula description
+- `HOMEBREW_UPDATED` now gets set when the rebase-fallback actually moves `HEAD` forward, so `brew update`'s changelog/update-report still fires (previously the early return skipped it silently)
+- rpath no longer grows unbounded across repeated `vendor-install` runs (retries, reinstalls) — checks whether the glibc lib dir is already present before appending
+- `grep -qa` instead of `-q` for the ELF magic-byte check (some `grep` builds, e.g. toybox, otherwise treat it as a binary file and skip it)
+- arm/i686 loader paths added alongside aarch64/x86_64 (Termux officially only ships aarch64/x86_64 today, but costs nothing to cover)
 
 ## Architecture
 
