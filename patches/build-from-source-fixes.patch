@@ -14,10 +14,10 @@ index 0272db9188..b5cc1bcc5f 100644
            puts JSON.pretty_generate({ tier:, findings: finding_maps }).gsub(/\[\n\n\s*\]/, "[]")
  
 diff --git a/Library/Homebrew/cmd/update.sh b/Library/Homebrew/cmd/update.sh
-index 32a44651ee..0aba272289 100644
+index 32a44651ee..e7bd21ac83 100644
 --- a/Library/Homebrew/cmd/update.sh
 +++ b/Library/Homebrew/cmd/update.sh
-@@ -250,6 +250,21 @@ merge_or_rebase() {
+@@ -250,6 +250,24 @@ merge_or_rebase() {
    local UPSTREAM_BRANCH
  
    DIR="$1"
@@ -25,7 +25,10 @@ index 32a44651ee..0aba272289 100644
 +  if [[ -d "/data/data/com.termux/files/usr/glibc" && "${DIR}" == "${HOMEBREW_REPOSITORY}" ]]
 +  then
 +    cd "${DIR}" || return
-+    if [[ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]]
++    local termux_upstream_ref
++    termux_upstream_ref="$(git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null)"
++    [[ -z "${termux_upstream_ref}" ]] && termux_upstream_ref="origin/main"
++    if [[ -n "$(git log --oneline "${termux_upstream_ref}"..HEAD 2>/dev/null)" ]]
 +    then
 +      opoo "Skipping self-update of ${DIR}: local Termux compat commits present (would be discarded otherwise)."
 +      local termux_skip_revision
@@ -40,7 +43,7 @@ index 32a44651ee..0aba272289 100644
    TAP_VAR="$2"
    UPSTREAM_BRANCH="$3"
 diff --git a/Library/Homebrew/cmd/vendor-install.sh b/Library/Homebrew/cmd/vendor-install.sh
-index a4fc1c137c..03f9d33c70 100644
+index a4fc1c137c..dd74cc1ca8 100644
 --- a/Library/Homebrew/cmd/vendor-install.sh
 +++ b/Library/Homebrew/cmd/vendor-install.sh
 @@ -79,7 +79,9 @@ check_linux_glibc_version() {
@@ -54,7 +57,7 @@ index a4fc1c137c..03f9d33c70 100644
    then
      glibc_version="${BASH_REMATCH[0]// /}"
      glibc_version_major="${glibc_version%.*}"
-@@ -261,6 +263,39 @@ install() {
+@@ -261,6 +263,40 @@ install() {
    [[ -n "${HOMEBREW_QUIET}" ]] || ohai "Pouring ${VENDOR_FILENAME}" >&2
    tar "${tar_args}" "${CACHED_LOCATION}"
  
@@ -70,8 +73,9 @@ index a4fc1c137c..03f9d33c70 100644
 +    local termux_glibc_lib="/data/data/com.termux/files/usr/glibc/lib"
 +    if [[ -x "${termux_patchelf}" && -n "${termux_glibc_ld}" ]]
 +    then
-+      find "${VENDOR_DIR}/portable-${VENDOR_NAME}/${VENDOR_VERSION}" -type f 2>/dev/null | while read -r vf
++      find "${VENDOR_DIR}/portable-${VENDOR_NAME}/${VENDOR_VERSION}" -type f -print0 2>/dev/null | while IFS= read -r -d '' vf
 +      do
++        [[ -L "${vf}" ]] && continue
 +        head -c4 "${vf}" 2>/dev/null | grep -q $'\x7fELF' || continue
 +        if ! chmod u+w "${vf}" 2>/dev/null
 +        then
