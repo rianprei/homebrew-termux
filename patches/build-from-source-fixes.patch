@@ -40,7 +40,7 @@ index 32a44651ee..0aba272289 100644
    TAP_VAR="$2"
    UPSTREAM_BRANCH="$3"
 diff --git a/Library/Homebrew/cmd/vendor-install.sh b/Library/Homebrew/cmd/vendor-install.sh
-index a4fc1c137c..bf1d597a95 100644
+index a4fc1c137c..03f9d33c70 100644
 --- a/Library/Homebrew/cmd/vendor-install.sh
 +++ b/Library/Homebrew/cmd/vendor-install.sh
 @@ -79,7 +79,9 @@ check_linux_glibc_version() {
@@ -54,26 +54,39 @@ index a4fc1c137c..bf1d597a95 100644
    then
      glibc_version="${BASH_REMATCH[0]// /}"
      glibc_version_major="${glibc_version%.*}"
-@@ -261,6 +263,26 @@ install() {
+@@ -261,6 +263,39 @@ install() {
    [[ -n "${HOMEBREW_QUIET}" ]] || ohai "Pouring ${VENDOR_FILENAME}" >&2
    tar "${tar_args}" "${CACHED_LOCATION}"
  
 +  if [[ -d "/data/data/com.termux/files/usr/glibc" ]]
 +  then
 +    local termux_patchelf="/data/data/com.termux/files/usr/glibc/bin/patchelf"
-+    local termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1"
++    local termux_glibc_ld
++    case "$(uname -m)" in
++      aarch64) termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1" ;;
++      x86_64)  termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-x86-64.so.2" ;;
++      *)       termux_glibc_ld="" ;;
++    esac
 +    local termux_glibc_lib="/data/data/com.termux/files/usr/glibc/lib"
-+    if [[ -x "${termux_patchelf}" ]]
++    if [[ -x "${termux_patchelf}" && -n "${termux_glibc_ld}" ]]
 +    then
 +      find "${VENDOR_DIR}/portable-${VENDOR_NAME}/${VENDOR_VERSION}" -type f 2>/dev/null | while read -r vf
 +      do
 +        head -c4 "${vf}" 2>/dev/null | grep -q $'\x7fELF' || continue
-+        chmod u+w "${vf}" 2>/dev/null
++        if ! chmod u+w "${vf}" 2>/dev/null
++        then
++          echo "Termux: failed to make ${vf} writable, skipping patchelf" >&2
++          continue
++        fi
 +        local old_rpath
 +        old_rpath="$("${termux_patchelf}" --print-rpath "${vf}" 2>/dev/null)"
 +        local new_rpath="${termux_glibc_lib}"
 +        [[ -n "${old_rpath}" ]] && new_rpath="${old_rpath}:${termux_glibc_lib}"
-+        "${termux_patchelf}" --set-interpreter "${termux_glibc_ld}" --set-rpath "${new_rpath}" "${vf}" 2>/dev/null
++        if ! "${termux_patchelf}" --set-interpreter "${termux_glibc_ld}" --set-rpath "${new_rpath}" "${vf}" 2>/dev/null
++        then
++          echo "Termux: failed to patchelf ${vf}" >&2
++          continue
++        fi
 +      done
 +    fi
 +  fi

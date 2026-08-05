@@ -67,7 +67,7 @@ Termux (Android ARM64)
 
 4. **Path redirection**: All references to `/bin/bash`, `/usr/bin/env`, `/usr/bin/ldd` are redirected to Termux equivalents.
 
-5. **Patch persistence**: Git hooks re-apply patches after `brew update`.
+5. **Patch persistence**: `cmd/update.sh` guard skips self-updating `Library/Homebrew` while local Termux commits are present, so `brew update` doesn't wipe them. `brew update-reset` is NOT guarded (destructive by design) — reapply `patches/build-from-source-fixes.patch` after running it.
 
 ## Installation
 
