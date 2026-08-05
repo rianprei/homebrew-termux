@@ -1,0 +1,244 @@
+diff --git a/Library/Homebrew/cmd/doctor.rb b/Library/Homebrew/cmd/doctor.rb
+index 0272db9188..b5cc1bcc5f 100644
+--- a/Library/Homebrew/cmd/doctor.rb
++++ b/Library/Homebrew/cmd/doctor.rb
+@@ -85,7 +85,9 @@ module Homebrew
+ 
+         # TODO: Remove string filtering when all diagnostics are Finding objects
+         finding_maps = finding_collection.grep_v(String).map(&:to_h)
+-        tier = (finding_maps.max_by { |f| f[:tier] } || {}).fetch(:tier, 1)
++        # `tier` can be an Integer or a Symbol (e.g. `:unsupported`); Ruby can't
++        # compare the two directly, so sort by a normalised numeric key instead.
++        tier = (finding_maps.max_by { |f| f[:tier].is_a?(Symbol) ? Float::INFINITY : f[:tier] } || {}).fetch(:tier, 1)
+         if args.json?
+           puts JSON.pretty_generate({ tier:, findings: finding_maps }).gsub(/\[\n\n\s*\]/, "[]")
+ 
+diff --git a/Library/Homebrew/cmd/update.sh b/Library/Homebrew/cmd/update.sh
+index 32a44651ee..0aba272289 100644
+--- a/Library/Homebrew/cmd/update.sh
++++ b/Library/Homebrew/cmd/update.sh
+@@ -250,6 +250,21 @@ merge_or_rebase() {
+   local UPSTREAM_BRANCH
+ 
+   DIR="$1"
++
++  if [[ -d "/data/data/com.termux/files/usr/glibc" && "${DIR}" == "${HOMEBREW_REPOSITORY}" ]]
++  then
++    cd "${DIR}" || return
++    if [[ -n "$(git log --oneline origin/main..HEAD 2>/dev/null)" ]]
++    then
++      opoo "Skipping self-update of ${DIR}: local Termux compat commits present (would be discarded otherwise)."
++      local termux_skip_revision
++      termux_skip_revision="$(read_current_revision)"
++      export HOMEBREW_UPDATE_BEFORE"$2"="${termux_skip_revision}"
++      export HOMEBREW_UPDATE_AFTER"$2"="${termux_skip_revision}"
++      return
++    fi
++  fi
++
+   cd "${DIR}" || return
+   TAP_VAR="$2"
+   UPSTREAM_BRANCH="$3"
+diff --git a/Library/Homebrew/cmd/vendor-install.sh b/Library/Homebrew/cmd/vendor-install.sh
+index a4fc1c137c..bf1d597a95 100644
+--- a/Library/Homebrew/cmd/vendor-install.sh
++++ b/Library/Homebrew/cmd/vendor-install.sh
+@@ -79,7 +79,9 @@ check_linux_glibc_version() {
+   local minimum_required_major="${HOMEBREW_LINUX_MINIMUM_GLIBC_VERSION%.*}"
+   local minimum_required_minor="${HOMEBREW_LINUX_MINIMUM_GLIBC_VERSION#*.}"
+ 
+-  if [[ "$(/usr/bin/ldd --version)" =~ \ [0-9]\.[0-9]+ ]]
++  local ldd_bin="/usr/bin/ldd"
++  [[ -x "/data/data/com.termux/files/usr/glibc/bin/ldd" ]] && ldd_bin="/data/data/com.termux/files/usr/glibc/bin/ldd"
++  if [[ "$("${ldd_bin}" --version)" =~ \ [0-9]\.[0-9]+ ]]
+   then
+     glibc_version="${BASH_REMATCH[0]// /}"
+     glibc_version_major="${glibc_version%.*}"
+@@ -261,6 +263,26 @@ install() {
+   [[ -n "${HOMEBREW_QUIET}" ]] || ohai "Pouring ${VENDOR_FILENAME}" >&2
+   tar "${tar_args}" "${CACHED_LOCATION}"
+ 
++  if [[ -d "/data/data/com.termux/files/usr/glibc" ]]
++  then
++    local termux_patchelf="/data/data/com.termux/files/usr/glibc/bin/patchelf"
++    local termux_glibc_ld="/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1"
++    local termux_glibc_lib="/data/data/com.termux/files/usr/glibc/lib"
++    if [[ -x "${termux_patchelf}" ]]
++    then
++      find "${VENDOR_DIR}/portable-${VENDOR_NAME}/${VENDOR_VERSION}" -type f 2>/dev/null | while read -r vf
++      do
++        head -c4 "${vf}" 2>/dev/null | grep -q $'\x7fELF' || continue
++        chmod u+w "${vf}" 2>/dev/null
++        local old_rpath
++        old_rpath="$("${termux_patchelf}" --print-rpath "${vf}" 2>/dev/null)"
++        local new_rpath="${termux_glibc_lib}"
++        [[ -n "${old_rpath}" ]] && new_rpath="${old_rpath}:${termux_glibc_lib}"
++        "${termux_patchelf}" --set-interpreter "${termux_glibc_ld}" --set-rpath "${new_rpath}" "${vf}" 2>/dev/null
++      done
++    fi
++  fi
++
+   if [[ "${VENDOR_PROCESSOR}" != "${HOMEBREW_PROCESSOR}" ]] ||
+      [[ "${VENDOR_PHYSICAL_PROCESSOR}" != "${HOMEBREW_PHYSICAL_PROCESSOR}" ]]
+   then
+diff --git a/Library/Homebrew/list.sh b/Library/Homebrew/list.sh
+index 6a2aaebb08..33b0a8a96f 100644
+--- a/Library/Homebrew/list.sh
++++ b/Library/Homebrew/list.sh
+@@ -227,7 +227,9 @@ homebrew-list() {
+   if [[ -z "${cask}" && -d "${HOMEBREW_CELLAR}" ]]
+   then
+     local formula_output
+-    formula_output="$(/usr/bin/env "${ls_env[@]}" ls "${ls_args[@]}" "${HOMEBREW_CELLAR}")" || exit 1
++    local env_bin="/usr/bin/env"
++    [[ -x "/data/data/com.termux/files/usr/bin/env" ]] && env_bin="/data/data/com.termux/files/usr/bin/env"
++    formula_output="$("${env_bin}" "${ls_env[@]}" ls "${ls_args[@]}" "${HOMEBREW_CELLAR}")" || exit 1
+     if [[ -n "${formula_output}" ]]
+     then
+       if [[ -n "${tty}" && -z "${formula}" ]]
+@@ -247,7 +249,9 @@ homebrew-list() {
+   if [[ -z "${formula}" && -d "${HOMEBREW_CASKROOM}" ]]
+   then
+     local cask_output
+-    cask_output="$(/usr/bin/env "${ls_env[@]}" ls "${ls_args[@]}" "${HOMEBREW_CASKROOM}")" || exit 1
++    local env_bin2="/usr/bin/env"
++    [[ -x "/data/data/com.termux/files/usr/bin/env" ]] && env_bin2="/data/data/com.termux/files/usr/bin/env"
++    cask_output="$("${env_bin2}" "${ls_env[@]}" ls "${ls_args[@]}" "${HOMEBREW_CASKROOM}")" || exit 1
+     if [[ -n "${cask_output}" ]]
+     then
+       if [[ -n "${tty}" && -z "${cask}" ]]
+diff --git a/Library/Homebrew/os/linux/glibc.rb b/Library/Homebrew/os/linux/glibc.rb
+index 2a60c930c2..cd359c50ac 100644
+--- a/Library/Homebrew/os/linux/glibc.rb
++++ b/Library/Homebrew/os/linux/glibc.rb
+@@ -11,7 +11,16 @@ module OS
+       def system_version
+         @system_version ||= T.let(nil, T.nilable(Version))
+         @system_version ||= begin
+-          version = Utils.popen_read("/usr/bin/ldd", "--version")[/ (\d+\.\d+)/, 1]
++          # Termux: no /usr/bin/ldd; the real glibc (bridge) ships its own ldd.
++          # Without this, popen_read silently fails, version comes back nil,
++          # and this resolves to Version::NULL -- which is "below" any real
++          # minimum/CI version, wrongly triggering needs_libc_formula? (auto
++          # building glibc from source as a dependency) and breaking
++          # DevelopmentTools.locate's tool lookup (false "no developer tools").
++          ldd_bin = "/usr/bin/ldd"
++          termux_ldd = "/data/data/com.termux/files/usr/glibc/bin/ldd"
++          ldd_bin = termux_ldd if File.executable?(termux_ldd)
++          version = Utils.popen_read(ldd_bin, "--version")[/ (\d+\.\d+)/, 1]
+           if version
+             Version.new version
+           else
+diff --git a/Library/Homebrew/shims/shared/curl b/Library/Homebrew/shims/shared/curl
+index 434664e516..b5096568c0 100755
+--- a/Library/Homebrew/shims/shared/curl
++++ b/Library/Homebrew/shims/shared/curl
+@@ -1,4 +1,4 @@
+-#!/bin/bash -p
++#!/data/data/com.termux/files/usr/glibc/bin/bash -p
+ 
+ # Make our $HOMEBREW_CURL selection universal - including in formulae usage.
+ 
+@@ -33,7 +33,7 @@ then
+ fi
+ 
+ try_exec_non_system "${HOMEBREW_CURL:-curl}" "$@"
+-safe_exec "/usr/bin/curl" "$@"
++safe_exec "/data/data/com.termux/files/usr/bin/curl" "$@"
+ 
+ echo "Could not execute curl. Try setting HOMEBREW_FORCE_BREWED_CURL=1" >&2
+ exit 1
+diff --git a/Library/Homebrew/shims/shared/git b/Library/Homebrew/shims/shared/git
+index dd4f4079d0..603998d9a8 100755
+--- a/Library/Homebrew/shims/shared/git
++++ b/Library/Homebrew/shims/shared/git
+@@ -1,4 +1,4 @@
+-#!/bin/bash -p
++#!/data/data/com.termux/files/usr/glibc/bin/bash -p
+ 
+ # This script exists because we support $HOMEBREW_GIT, $HOMEBREW_SVN etc., and Xcode-only
+ # or no Xcode/CLT configurations. Order is careful to be what the user would want.
+diff --git a/Library/Homebrew/system_command.rb b/Library/Homebrew/system_command.rb
+index 29c900521a..5173031948 100644
+--- a/Library/Homebrew/system_command.rb
++++ b/Library/Homebrew/system_command.rb
+@@ -313,7 +313,12 @@ class SystemCommand
+ 
+   sig { returns(T::Array[String]) }
+   def env_prefix
+-    ["/usr/bin/env", *env_args]
++    # Termux: /usr/bin/env doesn't exist on Android; the real env lives
++    # under the Termux prefix instead.
++    env_bin = "/usr/bin/env"
++    termux_env = "/data/data/com.termux/files/usr/bin/env"
++    env_bin = termux_env if File.executable?(termux_env)
++    [env_bin, *env_args]
+   end
+ 
+   sig { returns(T::Array[String]) }
+diff --git a/Library/Homebrew/utils/executables.sh b/Library/Homebrew/utils/executables.sh
+index 464a05b5ab..508a4762fa 100644
+--- a/Library/Homebrew/utils/executables.sh
++++ b/Library/Homebrew/utils/executables.sh
+@@ -22,7 +22,9 @@ executables_file_fresh() {
+     stat_printf=("/usr/bin/stat" "-f")
+     stat_format="%m"
+   else
+-    stat_printf=("/usr/bin/stat" "-c")
++    local stat_bin="/usr/bin/stat"
++    [[ -x "/data/data/com.termux/files/usr/bin/stat" ]] && stat_bin="/data/data/com.termux/files/usr/bin/stat"
++    stat_printf=("${stat_bin}" "-c")
+     stat_format="%Y"
+   fi
+ 
+diff --git a/Library/Homebrew/utils/os.sh b/Library/Homebrew/utils/os.sh
+index 08c804d112..846d6efbd8 100644
+--- a/Library/Homebrew/utils/os.sh
++++ b/Library/Homebrew/utils/os.sh
+@@ -118,7 +118,17 @@ setup-locale() {
+       export LC_ALL="en_US.UTF-8"
+     fi
+   else
+-    if ! command -v locale >/dev/null
++    if [[ -d "/data/data/com.termux/files/usr/glibc" ]]
++    then
++      # Termux: no `locale` binary on PATH by default (only the glibc bridge
++      # has one, and even that has no locale-archive generated), which made
++      # this fall back to LC_ALL=C -> Ruby's external encoding becomes
++      # US-ASCII -> JSON.parse chokes on any non-ASCII byte in formula
++      # descriptions (e.g. accented names) with "\xE2 on US-ASCII". Ruby and
++      # the C library both understand UTF-8 regardless of locale tooling, so
++      # just force it here instead of depending on `locale`.
++      export LC_ALL=C.UTF-8
++    elif ! command -v locale >/dev/null
+     then
+       export LC_ALL=C
+     elif [[ "$(locale charmap)" != "UTF-8" ]]
+@@ -206,7 +216,10 @@ setup-os-details() {
+     HOMEBREW_PRODUCT="${HOMEBREW_SYSTEM}brew"
+     # Don't try to follow /etc/os-release
+     # shellcheck disable=SC1091
+-    [[ -n "${HOMEBREW_LINUX}" ]] && HOMEBREW_OS_VERSION="$(source /etc/os-release && echo "${PRETTY_NAME}")"
++    # Termux: no /etc/os-release; real one lives under the Termux prefix.
++    HOMEBREW_OS_RELEASE="/etc/os-release"
++    [[ -f "/data/data/com.termux/files/usr/etc/os-release" ]] && HOMEBREW_OS_RELEASE="/data/data/com.termux/files/usr/etc/os-release"
++    [[ -n "${HOMEBREW_LINUX}" ]] && HOMEBREW_OS_VERSION="$(source "${HOMEBREW_OS_RELEASE}" && echo "${PRETTY_NAME}")"
+     : "${HOMEBREW_OS_VERSION:=$(uname -r)}"
+     HOMEBREW_OS_USER_AGENT_VERSION="${HOMEBREW_OS_VERSION}"
+ 
+diff --git a/bin/brew b/bin/brew
+index 46b6b39c3e..deeb265d72 100755
+--- a/bin/brew
++++ b/bin/brew
+@@ -1,4 +1,4 @@
+-#!/bin/bash -pu
++#!/data/data/com.termux/files/usr/glibc/bin/bash -pu
+ set -u
+ 
+ # Fail fast with concise message when not using bash
+@@ -347,4 +347,4 @@ fi
+ 
+ unset VAR ENV_VAR_NAMES
+ 
+-exec /usr/bin/env -i "${FILTERED_ENV[@]}" /bin/bash -p "${HOMEBREW_LIBRARY}/Homebrew/brew.sh" "$@"
++exec /data/data/com.termux/files/usr/bin/env -i "${FILTERED_ENV[@]}" /data/data/com.termux/files/usr/glibc/bin/bash -p "${HOMEBREW_LIBRARY}/Homebrew/brew.sh" "$@"
