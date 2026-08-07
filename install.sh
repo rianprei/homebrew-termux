@@ -80,7 +80,7 @@ cat > "${BREW_DIR}/bin/brew-termux" << 'WRAPPER'
 BREW_BIN="$(dirname "$(readlink -f "$0")")"
 BREW_DIR="$(dirname "$BREW_BIN")"
 export HOMEBREW_NO_AUTO_UPDATE=1
-export HOMEBREW_GIT=/data/data/com.termux/files/usr/bin/git
+export HOMEBREW_GIT_PATH=/data/data/com.termux/files/usr/bin/git
 export HOMEBREW_TEMP="${HOMEBREW_TEMP:-$HOME/tmp}"
 export HOMEBREW_DEFAULT_TEMP="${HOMEBREW_DEFAULT_TEMP:-$HOME/tmp}"
 mkdir -p "$HOMEBREW_TEMP"
@@ -93,12 +93,23 @@ if [ $EXIT_CODE -eq 0 ] && [[ "$1" == "install" || "$1" == "upgrade" || "$1" == 
   GLIBC_LD=/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1
   GLIBC_LIB=/data/data/com.termux/files/usr/glibc/lib
   echo "==> Auto-patching ELF binaries..."
+  # rpath must include every Cellar package's own lib/ dir, not just the
+  # global glibc bridge — a binary's own shared lib (e.g. jq -> libjq.so.1)
+  # and its deps' libs (e.g. oniguruma -> libonig.so.5) live under
+  # Cellar/<pkg>/<ver>/lib/, and --set-rpath was overwriting rpath with
+  # only $GLIBC_LIB, so those libs were never found at runtime.
+  CELLAR_LIBS=""
+  for libdir in "$BREW_DIR/Cellar"/*/*/lib; do
+    [ -d "$libdir" ] || continue
+    CELLAR_LIBS="${CELLAR_LIBS}:${libdir}"
+  done
+  FULL_RPATH="${GLIBC_LIB}${CELLAR_LIBS}"
   for pkg in "$BREW_DIR/Cellar"/*/*/bin/*; do
     [ -f "$pkg" ] || continue
     file "$pkg" 2>/dev/null | grep -q "ELF" || continue
     chmod 755 "$pkg" 2>/dev/null
     "$PATCHELF" --set-interpreter "$GLIBC_LD" "$pkg" 2>/dev/null
-    "$PATCHELF" --set-rpath "$GLIBC_LIB" "$pkg" 2>/dev/null
+    "$PATCHELF" --set-rpath "$FULL_RPATH" "$pkg" 2>/dev/null
   done
   echo "==> Done patching"
 fi
