@@ -1,0 +1,118 @@
+diff --git a/Library/Homebrew/formula.rb b/Library/Homebrew/formula.rb
+index bd84b0cffd..3cf119e1bd 100644
+--- a/Library/Homebrew/formula.rb
++++ b/Library/Homebrew/formula.rb
+@@ -3556,11 +3556,8 @@ class Formula
+       if verbose?
+         rd, wr = IO.pipe
+         begin
+-          pid = fork do
+-            rd.close
+-            log.close
+-            exec_cmd(cmd, args, wr, log_filename)
+-          end
++          # Termux: use Process.spawn instead of fork
++          pid = Process.spawn(cmd, *args.map(&:to_s), out: wr, err: wr)
+           wr.close
+ 
+           if verbose_using_dots
+@@ -3585,9 +3582,9 @@ class Formula
+           rd.close
+         end
+       else
+-        pid = fork do
+-          exec_cmd(cmd, args, log, log_filename)
+-        end
++        # Termux: use Process.spawn instead of fork, redirect straight to log
++        ENV["HOMEBREW_CC_LOG_PATH"] = log_filename
++        pid = Process.spawn(cmd, *args.map(&:to_s), out: log_filename, err: [log_filename, "a"])
+       end
+ 
+       Process.wait(pid)
+diff --git a/Library/Homebrew/homebrew.rb b/Library/Homebrew/homebrew.rb
+index fd316eff7a..d655f43ce3 100644
+--- a/Library/Homebrew/homebrew.rb
++++ b/Library/Homebrew/homebrew.rb
+@@ -36,22 +36,26 @@ module Homebrew
+     ).returns(T::Boolean)
+   }
+   def self._system(cmd, argv0 = nil, *args, **options, &_block)
+-    pid = fork do
+-      yield if block_given?
+-      args.map!(&:to_s)
+-      begin
+-        if argv0
+-          exec(cmd, argv0, *args, **options)
+-        else
+-          exec(cmd, *args, **options)
+-        end
+-      rescue
+-        nil
+-      end
+-      exit! 1 # never gets here unless exec failed
+-    end
+-    Process.wait(pid)
+-    $CHILD_STATUS.success? || false
++# Termux: use Process.spawn instead of fork (fork crashes with pthread_rwlock_unlock)
++args.map!(&:to_s)
++stdout_r, stdout_w = IO.pipe
++stderr_r, stderr_w = IO.pipe
++opts = options.merge(out: stdout_w, err: stderr_w)
++pid = begin
++  if argv0
++    Process.spawn(cmd, argv0, *args, **opts)
++  else
++    Process.spawn(cmd, *args, **opts)
++  end
++rescue
++  stdout_w.close; stderr_w.close; stdout_r.close; stderr_r.close
++  return false
++end
++stdout_w.close; stderr_w.close
++Thread.new(stdout_r, &:read)
++Thread.new(stderr_r, &:read)
++Process.wait(pid)
++$CHILD_STATUS.success? || false
+   end
+   private_class_method :_system
+   # rubocop:enable Naming/PredicateMethod
+diff --git a/Library/Homebrew/system_command.rb b/Library/Homebrew/system_command.rb
+index 5173031948..35cb419370 100644
+--- a/Library/Homebrew/system_command.rb
++++ b/Library/Homebrew/system_command.rb
+@@ -424,14 +424,9 @@ class SystemCommand
+       end
+     end
+ 
+-    pid ||= fork do
+-      if run_as_real_uid? && Process.euid != Process.uid
+-        Process::UID.change_privilege(Process.uid)
+-      elsif reset_uid? && Process.euid != Process.uid
+-        Process::UID.change_privilege(Process.euid)
+-      end
+-
+-      exec(exec_env, [executable, executable], *args, **options)
++    pid ||= begin
++      # Termux: skip privilege changes (not available without root)
++      Process.spawn(exec_env, [executable, executable], *args, **options)
+     rescue SystemCallError => e
+       $stderr.puts(e.message)
+       exit!(127)
+diff --git a/Library/Homebrew/unpack_strategy/tar.rb b/Library/Homebrew/unpack_strategy/tar.rb
+index 9c540e3966..388d2fbfca 100644
+--- a/Library/Homebrew/unpack_strategy/tar.rb
++++ b/Library/Homebrew/unpack_strategy/tar.rb
+@@ -48,7 +48,12 @@ module UnpackStrategy
+           path
+         end
+ 
+-        system_command! "tar",
++        tar_cmd = if Homebrew.termux? && File.exist?("/data/data/com.termux/files/usr/bin/brew-tar")
++          "/data/data/com.termux/files/usr/bin/brew-tar"
++        else
++          "tar"
++        end
++        system_command! tar_cmd,
+                         args:    ["--extract", "--no-same-owner",
+                                   "--file", tar_path,
+                                   "--directory", unpack_dir],
